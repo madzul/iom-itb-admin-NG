@@ -102,6 +102,40 @@
           </div>
       </section>
 
+      <section class="flex flex-col gap-3 rounded-2xl border-2 border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="text-sm font-semibold text-slate-900">Export Data Transaksi</p>
+          <p class="mt-0.5 text-xs text-slate-500">
+            Mengunduh seluruh transaksi sesuai filter &amp; pencarian aktif (semua halaman, bukan hanya halaman ini).
+            <span v-if="exporting" class="font-semibold text-blue-700">{{ exportProgressText }}</span>
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <button
+            type="button"
+            :disabled="Boolean(exporting)"
+            class="inline-flex items-center gap-1.5 rounded-full border border-green-600 bg-white px-4 py-2 text-sm font-semibold text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-50"
+            @click="exportTransactions('csv')"
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true">
+              <path d="M12 3a1 1 0 011 1v9.586l3.293-3.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 111.414-1.414L11 13.586V4a1 1 0 011-1zM4 19a1 1 0 011-1h14a1 1 0 110 2H5a1 1 0 01-1-1z" />
+            </svg>
+            {{ exporting === 'csv' ? 'Menyiapkan...' : 'Export CSV' }}
+          </button>
+          <button
+            type="button"
+            :disabled="Boolean(exporting)"
+            class="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+            @click="exportTransactions('xlsx')"
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true">
+              <path d="M12 3a1 1 0 011 1v9.586l3.293-3.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 111.414-1.414L11 13.586V4a1 1 0 011-1zM4 19a1 1 0 011-1h14a1 1 0 110 2H5a1 1 0 01-1-1z" />
+            </svg>
+            {{ exporting === 'xlsx' ? 'Menyiapkan...' : 'Export Excel' }}
+          </button>
+        </div>
+      </section>
+
       <div class="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-sm">
         <div class="overflow-x-auto">
           <table class="min-w-full text-sm">
@@ -274,7 +308,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { GET_TRANSACTIONS, DELETE_TRANSACTION, PUT_TRANSACTION, CONFIRM_TRANSACTION_PAYMENT } from '@/store/transaction.module';
+import { GET_TRANSACTIONS, DELETE_TRANSACTION, PUT_TRANSACTION, CONFIRM_TRANSACTION_PAYMENT, FETCH_ALL_TRANSACTIONS } from '@/store/transaction.module';
+import { exportRows } from '@/utils/exportData';
+import type { ExportColumn } from '@/utils/exportData';
 import Breadcrumb from '@/components/AppBreadcrumb.vue';
 import AppSelect from '@/components/input/AppSelect.vue';
 import { useStore } from 'vuex';
@@ -301,6 +337,9 @@ type Transaction = {
   payment?: string | null;
   paymentMethod?: string;
   paymentStatus?: string;
+  paymentType?: string | null;
+  midtransOrderId?: string | null;
+  midtransTransactionId?: string | null;
   grossAmount?: number | string | null;
   status: string;
   createdAt?: string;
@@ -653,6 +692,105 @@ const saveStatus = async (item: Transaction) => {
     });
   } finally {
     savingStatus.value[item.id] = false;
+  }
+};
+
+// ─── Export CSV / Excel ───────────────────────────────────────────────────
+const exporting = ref<'' | 'csv' | 'xlsx'>('');
+const exportLoaded = ref(0);
+const exportTotal = ref(0);
+const exportProgressText = computed(() =>
+  exportTotal.value ? `Mengambil data ${exportLoaded.value}/${exportTotal.value}...` : 'Mengambil data...',
+);
+
+const toNumber = (value?: number | string | null) => {
+  if (value == null || value === '') return null;
+  const num = Number(value);
+  return Number.isNaN(num) ? null : num;
+};
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+const formatDateTimeExport = (dateString?: string) => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+};
+
+const exportColumns: ExportColumn<Transaction>[] = [
+  { header: 'No', value: (_row, i) => i + 1, width: 6, format: 'integer' },
+  { header: 'Kode Pesanan', value: (row) => row.code || '', width: 22 },
+  { header: 'Tanggal Pesan', value: (row) => formatDateTimeExport(row.createdAt), width: 18 },
+  { header: 'Nama Pembeli', value: (row) => row.username || '', width: 24 },
+  { header: 'Email', value: (row) => row.email || '', width: 28 },
+  { header: 'No. Telp', value: (row) => (row.noTelp ? String(row.noTelp) : ''), width: 16 },
+  { header: 'Alamat', value: (row) => row.address || '', width: 40 },
+  { header: 'Catatan', value: (row) => row.notes || '', width: 30 },
+  { header: 'Merchandise', value: (row) => merchandiseName(row), width: 28 },
+  { header: 'Harga Satuan (Rp)', value: (row) => toNumber(row.merchandises?.price), width: 16, format: 'currency' },
+  { header: 'Qty', value: (row) => toNumber(row.qty), width: 8, format: 'integer' },
+  { header: 'Total (Rp)', value: (row) => toNumber(row.grossAmount), width: 16, format: 'currency' },
+  { header: 'Metode Bayar', value: (row) => paymentMethodLabel(row.paymentMethod), width: 14 },
+  { header: 'Tipe Pembayaran', value: (row) => row.paymentType || '', width: 16 },
+  { header: 'Status Bayar', value: (row) => paymentStatusLabel(row.paymentStatus), width: 14 },
+  { header: 'Status Pesanan', value: (row) => formatStatus(row.status), width: 14 },
+  { header: 'Midtrans Order ID', value: (row) => row.midtransOrderId || '', width: 24 },
+  { header: 'Bukti Transfer', value: (row) => (isManualProof(row.payment) ? String(row.payment) : ''), width: 40 },
+  { header: 'Link Status Pesanan', value: (row) => trackingUrl(row), width: 40 },
+  { header: 'Terakhir Diperbarui', value: (row) => formatDateTimeExport(row.updatedAt), width: 18 },
+];
+
+const buildExportFilename = () => {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+  const filters = [paymentMethod.value, paymentStatus.value, orderStatus.value]
+    .filter(Boolean)
+    .map((part) => part.replace(/\s+/g, '-'));
+  return ['transaksi-merchandise', ...filters, stamp].join('_');
+};
+
+const exportTransactions = async (format: 'csv' | 'xlsx') => {
+  if (exporting.value) return;
+
+  exporting.value = format;
+  exportLoaded.value = 0;
+  exportTotal.value = 0;
+
+  try {
+    const rows: Transaction[] = await store.dispatch(FETCH_ALL_TRANSACTIONS, {
+      data: {
+        search: search.value || undefined,
+        paymentMethod: paymentMethod.value || undefined,
+        paymentStatus: paymentStatus.value || undefined,
+        status: orderStatus.value || undefined,
+      },
+      onProgress: (loaded: number, total: number) => {
+        exportLoaded.value = loaded;
+        exportTotal.value = total;
+      },
+    });
+
+    if (!rows.length) {
+      await Swal.fire({
+        title: 'Tidak ada data',
+        text: 'Tidak ada transaksi yang cocok dengan filter saat ini.',
+        icon: 'info',
+        confirmButtonColor: '#4f46e5',
+      });
+      return;
+    }
+
+    exportRows(format, rows, exportColumns, buildExportFilename(), 'Transaksi Merchandise');
+  } catch (error) {
+    await Swal.fire({
+      title: 'Gagal export data',
+      text: getErrorMessage(error),
+      icon: 'error',
+      confirmButtonColor: '#4f46e5',
+    });
+  } finally {
+    exporting.value = '';
   }
 };
 
